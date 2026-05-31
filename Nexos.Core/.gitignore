@@ -1,0 +1,44 @@
+## Nexos.Core — .NET Build Artifacts
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# NuGet packages
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+
+# User-specific files
+*.rsuser
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.suo
+*.user
+*.userprefs
+
+# SQLite database (memória local — não versionar)
+*.db
+*.db-shm
+*.db-wal
+
+# Rider / JetBrains
+.idea/
+
+# dotnet tool manifest
+.config/

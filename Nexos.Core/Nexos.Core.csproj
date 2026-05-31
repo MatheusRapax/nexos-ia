@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Nexos.Core</RootNamespace>
+    <AssemblyName>Nexos.Core</AssemblyName>
+    <!-- Suprime avisos experimentais do Semantic Kernel -->
+    <NoWarn>SKEXP0001;SKEXP0010;SKEXP0050;SKEXP0070</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Núcleo do Semantic Kernel -->
+    <PackageReference Include="Microsoft.SemanticKernel" Version="1.21.1" />
+
+    <!-- Conector OpenAI-compatible (usado para apontar ao Llamafile local) -->
+    <PackageReference Include="Microsoft.SemanticKernel.Connectors.OpenAI" Version="1.21.1" />
+
+    <!-- Conector de memória vetorial com backend SQLite -->
+    <PackageReference Include="Microsoft.SemanticKernel.Connectors.Sqlite" Version="1.22.0-alpha" />
+  </ItemGroup>
+
+</Project>
