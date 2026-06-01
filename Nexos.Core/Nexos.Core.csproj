@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Nexos.Core</RootNamespace>
     <AssemblyName>Nexos.Core</AssemblyName>
-    <!-- Suprime avisos experimentais do Semantic Kernel -->
+    <!-- Fase 1: SKEXP0070 cobre FunctionChoiceBehavior (ainda experimental no 1.21) -->
     <NoWarn>SKEXP0001;SKEXP0010;SKEXP0050;SKEXP0070</NoWarn>
   </PropertyGroup>
 
@@ -15,11 +15,14 @@
     <!-- Núcleo do Semantic Kernel -->
     <PackageReference Include="Microsoft.SemanticKernel" Version="1.21.1" />
 
-    <!-- Conector OpenAI-compatible (usado para apontar ao Llamafile local) -->
+    <!-- Conector OpenAI-compatible (aponta ao Llamafile local) -->
     <PackageReference Include="Microsoft.SemanticKernel.Connectors.OpenAI" Version="1.21.1" />
 
-    <!-- Conector de memória vetorial com backend SQLite -->
-    <PackageReference Include="Microsoft.SemanticKernel.Connectors.Sqlite" Version="1.22.0-alpha" />
+    <!--
+      FASE 2 (MCP): descomente quando migrar para arquitetura de 2 projetos
+      <PackageReference Include="ModelContextProtocol" Version="*-*" />
+      <PackageReference Include="Microsoft.SemanticKernel.Connectors.Sqlite" Version="1.22.0-alpha" />
+    -->
   </ItemGroup>
 
 </Project>
