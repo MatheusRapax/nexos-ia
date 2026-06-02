@@ -1,12 +1,15 @@
 // ============================================================
-//  Nexos.Core — Smart Router v2 (Fase 1b)
-//
-//  Fix v2:
-//    • ResolveCase: path case-insensitive no Linux
-//    • DetectIntent: bare path (ex: /algum/caminho) → list ou read
-//    • Sem caminho detectado → LLM usa histórico para responder
+//  Nexos.Core — Smart Router v3 (Fase 4 - Task Manager C#)
 // ============================================================
 
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Net.Http;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
@@ -50,33 +53,44 @@ var fs = new FileSystemPlugin();
 // ═══════════════════════════════════════════════════════════
 
 var history = new ChatHistory();
-string currentPlan = "";
+bool lastTerminalError = false;
 
 history.AddSystemMessage(
-    "Você é o Nexos, assistente técnico sênior autônomo. " +
-    "Você tem acesso ao <repo_map>, que mostra a estrutura atual do projeto. Use-o para se localizar. Só utilize o [COMANDO: LER nome_do_arquivo.ext] se precisar ver o código interno de um arquivo específico.\n" +
-    "Se precisar buscar informações no RAG de memória, responda APENAS: [COMANDO: MCP buscar 'assunto']\n" +
-    "O sistema executará o comando e injetará a resposta para você continuar pensando em loop.\n" +
-    "Trabalhe passo a passo.\n" +
-    "MUITO IMPORTANTE: Para tarefas complexas, sua PRIMEIRA AÇÃO no turno 1 deve ser criar um plano usando [COMANDO: PLANO <checklist_markdown>]. " +
-    "Exemplo: [COMANDO: PLANO - [ ] Criar pasta \\n - [ ] Mover arquivo]. " +
-    "Em seguida, EXECUTE as ações reais silenciosamente usando [COMANDO: TERMINAL ...] ou [COMANDO: SALVAR ...].\n" +
-    "- Para criar/editar: gere [COMANDO: SALVAR caminho/arquivo.ext] seguido do bloco de código. (Gere APENAS UM arquivo por vez, aguarde confirmação).\n" +
-    "- Para terminal (ex: criar pasta, mover arquivo, dotnet build): use [COMANDO: TERMINAL <comando>]. A resposta do terminal retornará a você.\n" +
-    "Aguarde a confirmação do sistema e o log do terminal antes de planejar o próximo arquivo/comando. " +
-    "Quando TODAS as tarefas estiverem concluídas, atualize seu plano marcando as etapas com [x] e só então emita a tag [COMANDO: FINALIZAR]."
+    "System: Nexos AI. Acesso ao <repo_map> atual.\n" +
+    "Comandos:\n" +
+    "!task <desc> : Cria UMA NOVA tarefa\n" +
+    "!done <id>   : Conclui tarefa\n" +
+    "!list <dir>  : Lista pasta (deixe vazio para dir atual)\n" +
+    "!read <arq>  : Lê arquivo\n" +
+    "!sh <cmd>    : Executa bash/powershell\n" +
+    "!save <arq>  : Salva arquivo. Linha seguinte = bloco markdown com código.\n" +
+    "!mcp <query> : Busca no RAG\n" +
+    "!exit        : Encerra agente\n" +
+    "Regras Críticas:\n" +
+    "1. NUNCA envie !task se o seu objetivo já estiver em <lista_de_tarefas>! Apenas envie a ação (!sh, !list, etc).\n" +
+    "2. O diretório base é o [Diretório de Trabalho Atual]. Use caminhos relativos (ex: !list projeto-html).\n" +
+    "3. !done é bloqueado se o !sh anterior falhou. Corrija o erro primeiro.\n" +
+    "4. NÃO use checklists markdown."
 );
 
 // ═══════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════
 
-// Resolve caminho com case-insensitive no Linux
-// Ex: /media/matheus/nexos → /media/matheus/Nexos
 static string ResolveCase(string path, string currentDir = "")
 {
     if (!string.IsNullOrEmpty(currentDir) && !Path.IsPathRooted(path) && !path.StartsWith("/") && !path.StartsWith("~/"))
     {
+        var currentDirName = new DirectoryInfo(currentDir).Name;
+        if (string.Equals(path.TrimEnd('/'), currentDirName, StringComparison.OrdinalIgnoreCase)) 
+        {
+            var combinedTest = Path.Combine(currentDir, path);
+            if (!Directory.Exists(combinedTest) && !File.Exists(combinedTest)) 
+            {
+                return currentDir; // Fallback: A IA repetiu o nome da raiz achando que era necessário.
+            }
+        }
+        
         path = Path.Combine(currentDir, path);
     }
 
@@ -105,7 +119,6 @@ static string ResolveCase(string path, string currentDir = "")
     return current;
 }
 
-// Detecta intenção e extrai caminho (custo zero de tokens)
 static (string intent, string? path) DetectIntent(string input, string currentDir = "")
 {
     var lower = input.ToLowerInvariant();
@@ -121,8 +134,6 @@ static (string intent, string? path) DetectIntent(string input, string currentDi
         return false;
     }
 
-    // Bare path: input é apenas um caminho (resposta a uma pergunta anterior)
-    // Ex: /media/matheus/Nexos/  ou  ./src  ou  C:\users\...
     if (!trimmed.Contains(' ') && IsPathStart(trimmed))
     {
         var p = trimmed.Trim('"', '\'');
@@ -168,8 +179,8 @@ static (string intent, string? path) DetectIntent(string input, string currentDi
 
 Console.ForegroundColor = ConsoleColor.Cyan;
 Console.WriteLine("╔══════════════════════════════════════════════╗");
-Console.WriteLine("║   NEXOS — Smart Router v2 (Fase 1b)          ║");
-Console.WriteLine("║   File ops → saída direta  │  Chat → LLM     ║");
+Console.WriteLine("║   NEXOS — Smart Router v3 (Fase 4)           ║");
+Console.WriteLine("║   Gerenciador de Tarefas no C#               ║");
 Console.WriteLine("║   Timeout: 600s  │  'sair' para encerrar     ║");
 Console.WriteLine("╚══════════════════════════════════════════════╝");
 Console.ResetColor();
@@ -213,10 +224,9 @@ while (true)
         {
             Console.WriteLine($"  [Tool] ListDirectory({resolvedPath})");
             toolResult = fs.ListDirectory(resolvedPath);
-            if (!toolResult.StartsWith("ERRO"))
-            {
-                currentContextDir = resolvedPath;
-            }
+            // Removido: currentContextDir = resolvedPath;
+            // O agente moderno NUNCA deve alterar seu Root Workspace Dinamicamente (CD stateful). 
+            // Ele sempre opera a partir da raiz para evitar perda de contexto.
         }
         else
         {
@@ -231,14 +241,13 @@ while (true)
         Console.WriteLine(toolResult);
         Console.WriteLine();
 
-        // Salva no histórico para o LLM ter contexto nas perguntas seguintes
         history.AddUserMessage(input);
         history.AddAssistantMessage($"Executei '{intent}' em '{resolvedPath}':\n{toolResult}");
 
         continue;
     }
 
-    // CHAT: envia ao LLM (inclui perguntas sobre resultados anteriores)
+    // CHAT: envia ao LLM
     history.AddUserMessage(input);
 
     bool agentFinished = false;
@@ -250,12 +259,13 @@ while (true)
 
         try
         {
-            // Injeção dinâmica do Repo Map
+            // Injeção dinâmica do Repo Map + Task Manager
             var repoMapText = WorkspaceAnalyzer.GenerateRepoMap(currentContextDir);
-            if (!string.IsNullOrWhiteSpace(currentPlan))
-            {
-                repoMapText += $"\n\n<seu_plano_atual>\n{currentPlan}\n</seu_plano_atual>";
-            }
+            
+            repoMapText = $"[Diretório de Trabalho Atual: {currentContextDir}]\n\n" + repoMapText + 
+                          $"\n\n<lista_de_tarefas>\n{TaskManager.GetTasksString()}\n</lista_de_tarefas>\n" +
+                          $"[REGRA]: Não emita !task se sua próxima ação for parte de uma tarefa pendente acima. Pule direto para a ação (!sh, !list, !read, etc).";
+            
             var repoMapMsg = new ChatMessageContent(AuthorRole.System, repoMapText);
             history.Add(repoMapMsg);
 
@@ -268,7 +278,7 @@ while (true)
             );
 
             sw.Stop();
-            history.Remove(repoMapMsg); // Remove para não poluir o contexto longo
+            history.Remove(repoMapMsg); // Remove para não poluir o contexto
 
             var text = response.Content ?? string.Empty;
 
@@ -300,8 +310,7 @@ while (true)
                 break;
             }
 
-            // EXTRAI TODOS OS COMANDOS SEQUENCIALMENTE
-            var commandsMatches = System.Text.RegularExpressions.Regex.Matches(text, @"\[COMANDO:\s*([A-Z_]+)(?:\s+(.*?))?\]", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+            var commandsMatches = System.Text.RegularExpressions.Regex.Matches(text, @"!(task|done|list|read|sh|save|mcp|exit)(?:\s+([^\n\r]+))?", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             if (commandsMatches.Count > 0)
             {
@@ -310,13 +319,25 @@ while (true)
 
                 foreach (System.Text.RegularExpressions.Match match in commandsMatches)
                 {
-                    var cmdType = match.Groups[1].Value.Trim().ToUpper();
+                    var cmdTypeRaw = match.Groups[1].Value.Trim().ToLower();
                     var cmdArg = match.Groups[2].Value.Trim();
+                    
+                    string cmdType = cmdTypeRaw switch {
+                        "exit" => "FINALIZAR",
+                        "task" => "NOVA_TAREFA",
+                        "done" => "CONCLUIR_TAREFA",
+                        "save" => "SALVAR",
+                        "sh" => "TERMINAL",
+                        "list" => "LISTAR",
+                        "read" => "LER",
+                        "mcp" => "MCP",
+                        _ => ""
+                    };
                     
                     if (cmdType == "FINALIZAR")
                     {
                         var cleanText = text.Replace(match.Value, "").Trim();
-                        cleanText = System.Text.RegularExpressions.Regex.Replace(cleanText, @"\[COMANDO:.*?\]", "", System.Text.RegularExpressions.RegexOptions.Singleline).Trim();
+                        cleanText = System.Text.RegularExpressions.Regex.Replace(cleanText, @"!(task|done|list|read|sh|save|mcp|exit)(?:\s+[^\n\r]+)?", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
                         
                         if (!string.IsNullOrEmpty(cleanText))
                         {
@@ -326,31 +347,57 @@ while (true)
                             Console.WriteLine(cleanText);
                         }
                         
-                        if (!string.IsNullOrWhiteSpace(currentPlan) && currentPlan.Contains("[ ]"))
+                        if (TaskManager.HasPendingTasks())
                         {
                             Console.ForegroundColor = ConsoleColor.Yellow;
-                            Console.WriteLine($"\n[Sistema] Comando FINALIZAR negado. O seu plano ainda contém tarefas desmarcadas '[ ]'.");
+                            Console.WriteLine($"\n[Sistema] Comando FINALIZAR negado. Existem tarefas pendentes.");
                             Console.ResetColor();
-                            stringBuilderSysMsg.AppendLine($"[Sistema] Comando FINALIZAR negado. O seu plano ainda contém tarefas desmarcadas '[ ]'. Execute o que falta e atualize o plano marcando com '[x]'.");
+                            stringBuilderSysMsg.AppendLine($"[SISTEMA: AVISO] Comando FINALIZAR negado. Você ainda tem tarefas [PENDENTE] na lista. Conclua-as usando [COMANDO: CONCLUIR_TAREFA id] ou adicione novas tarefas se o fluxo mudou.");
                             continue;
                         }
 
                         Console.ForegroundColor = ConsoleColor.Magenta;
-                        Console.WriteLine("\n[Agente Executando] Tarefa Finalizada.");
+                        Console.WriteLine("\n[Agente Executando] Operação Finalizada.");
                         Console.ResetColor();
                         agentFinished = true;
                         break;
                     }
-                    else if (cmdType == "PLANO")
+                    else if (cmdType == "NOVA_TAREFA")
                     {
-                        currentPlan = cmdArg;
+                        int id = TaskManager.AddTask(cmdArg);
                         Console.ForegroundColor = ConsoleColor.Cyan;
-                        Console.WriteLine($"  [Tracker] Bloco de Notas atualizado.");
+                        Console.WriteLine($"  [Tracker] Tarefa [{id}] '{cmdArg}' adicionada.");
                         Console.ResetColor();
-                        stringBuilderSysMsg.AppendLine($"[Sistema] Plano atualizado com sucesso. Continue a execução.");
+                        stringBuilderSysMsg.AppendLine($"[Sistema] Tarefa '{cmdArg}' adicionada com o ID {id}.");
+                    }
+                    else if (cmdType == "CONCLUIR_TAREFA")
+                    {
+                        if (lastTerminalError)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"  [Guardrail] CONCLUIR_TAREFA bloqueado devido a erro no terminal anterior.");
+                            Console.ResetColor();
+                            stringBuilderSysMsg.AppendLine($"[SISTEMA: ERRO CRÍTICO] O comando de terminal anterior falhou (ExitCode != 0). O sistema BLOQUEOU a conclusão da tarefa. Você NÃO PODE concluir tarefas até corrigir o erro (analise a saída de erro do terminal).");
+                            continue;
+                        }
+
+                        if (int.TryParse(cmdArg, out int id) && TaskManager.CompleteTask(id))
+                        {
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            Console.WriteLine($"  [Tracker] Tarefa [{id}] marcada como concluída.");
+                            Console.ResetColor();
+                            stringBuilderSysMsg.AppendLine($"[Sistema] Tarefa [{id}] concluída com sucesso.");
+                        }
+                        else
+                        {
+                            stringBuilderSysMsg.AppendLine($"[Sistema] Erro: Tarefa ID '{cmdArg}' não encontrada.");
+                        }
                     }
                     else if (cmdType == "SALVAR")
                     {
+                        // Reseta a flag de erro ao executar com sucesso uma operação manual segura
+                        lastTerminalError = false;
+
                         var savePath = ResolveCase(cmdArg, currentContextDir);
                         
                         Console.ForegroundColor = ConsoleColor.Magenta;
@@ -438,6 +485,9 @@ while (true)
                                         finalLog += "\n[DICA DO CÉREBRO]: O comando 'mv' no PowerShell falha com múltiplos arquivos. Use wildcards (ex: mv *.html pasta/) ou repita o comando para cada arquivo.";
                                     }
 
+                                    // GUARDRAIL MASTER: Atualiza a flag indicando se houve falha
+                                    lastTerminalError = proc.ExitCode != 0;
+
                                     Console.ForegroundColor = proc.ExitCode == 0 ? ConsoleColor.Green : ConsoleColor.Red;
                                     Console.WriteLine($"[Terminal Exit {proc.ExitCode}] Executado.");
                                     Console.ResetColor();
@@ -451,6 +501,7 @@ while (true)
                             }
                             catch (Exception ex)
                             {
+                                lastTerminalError = true;
                                 Console.ForegroundColor = ConsoleColor.Red;
                                 Console.WriteLine($"[Erro Terminal] {ex.Message}\n");
                                 Console.ResetColor();
@@ -459,6 +510,8 @@ while (true)
                         }
                         else
                         {
+                            // Usuário negou, não consideramos erro do LLM
+                            lastTerminalError = false;
                             Console.ForegroundColor = ConsoleColor.Yellow;
                             Console.WriteLine($"[Cancelado] Comando abortado.\n");
                             Console.ResetColor();
@@ -467,7 +520,7 @@ while (true)
                     }
                     else if (cmdType == "LISTAR")
                     {
-                        var path = ResolveCase(cmdArg, currentContextDir);
+                        var path = string.IsNullOrWhiteSpace(cmdArg) ? currentContextDir : ResolveCase(cmdArg, currentContextDir);
                         Console.ForegroundColor = ConsoleColor.Magenta;
                         Console.WriteLine($"  [Agente] Listando: {path}");
                         Console.ResetColor();
@@ -506,7 +559,6 @@ while (true)
                 continue;
             }
 
-            // SE NÃO EXECUTOU COMANDOS, IMPRIME COMO CHAT
             Console.ForegroundColor = ConsoleColor.Magenta;
             Console.Write("\nNexos: ");
             Console.ResetColor();
@@ -515,44 +567,88 @@ while (true)
 
             history.AddAssistantMessage(text);
             
-            // Para não prender o usuário num loop eterno se a IA apenas 
-            // responder sem usar [COMANDO: FINALIZAR] ou comandos válidos.
             if (!text.Contains("[COMANDO:")) 
             {
                 agentFinished = true;
                 break;
             }
-    }
-    catch (TaskCanceledException)
-    {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine("\n[TIMEOUT] Modelo ultrapassou 600s. Reinicie para limpar o contexto.\n");
-        Console.ResetColor();
-        if (history.Count > 1) history.RemoveAt(history.Count - 1);
-        break;
-    }
-    catch (HttpRequestException ex)
-    {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"\n[CONEXÃO] Servidor inacessível: {ex.Message}\n");
-        Console.ResetColor();
-        if (history.Count > 1) history.RemoveAt(history.Count - 1);
-        break;
-    }
-    catch (Exception ex)
-    {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"\n[ERRO] {ex.GetType().Name}: {ex.Message}\n");
-        Console.ResetColor();
-        if (history.Count > 1) history.RemoveAt(history.Count - 1);
-        break;
-    }
+        }
+        catch (TaskCanceledException)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("\n[TIMEOUT] Modelo ultrapassou 600s. Reinicie para limpar o contexto.\n");
+            Console.ResetColor();
+            if (history.Count > 1) history.RemoveAt(history.Count - 1);
+            break;
+        }
+        catch (HttpRequestException ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n[CONEXÃO] Servidor inacessível: {ex.Message}\n");
+            Console.ResetColor();
+            if (history.Count > 1) history.RemoveAt(history.Count - 1);
+            break;
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n[ERRO] {ex.GetType().Name}: {ex.Message}\n");
+            Console.ResetColor();
+            if (history.Count > 1) history.RemoveAt(history.Count - 1);
+            break;
+        }
     }
 }
 
 // ═══════════════════════════════════════════════════════════
-// HANDLER: remove stream_options incompatível com llama.cpp
+// ESTRUTURAS AUXILIARES
 // ═══════════════════════════════════════════════════════════
+
+public class TaskItem
+{
+    public int Id { get; set; }
+    public string Description { get; set; } = string.Empty;
+    public bool IsCompleted { get; set; }
+}
+
+public static class TaskManager
+{
+    private static readonly Dictionary<int, TaskItem> _tasks = new();
+    private static int _nextId = 1;
+
+    public static int AddTask(string description)
+    {
+        int id = _nextId++;
+        _tasks[id] = new TaskItem { Id = id, Description = description, IsCompleted = false };
+        return id;
+    }
+
+    public static bool CompleteTask(int id)
+    {
+        if (_tasks.TryGetValue(id, out var task))
+        {
+            task.IsCompleted = true;
+            return true;
+        }
+        return false;
+    }
+
+    public static bool HasPendingTasks()
+    {
+        return _tasks.Values.Any(t => !t.IsCompleted);
+    }
+
+    public static string GetTasksString()
+    {
+        if (_tasks.Count == 0) return "Nenhuma tarefa registrada.";
+        var sb = new StringBuilder();
+        foreach (var t in _tasks.Values)
+        {
+            sb.AppendLine($"[{t.Id}] {(t.IsCompleted ? "[CONCLUÍDA]" : "[PENDENTE]")} {t.Description}");
+        }
+        return sb.ToString();
+    }
+}
 
 public class LlamafileCompatHandler : DelegatingHandler
 {
